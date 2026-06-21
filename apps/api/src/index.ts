@@ -42,7 +42,7 @@ code{background:#f3f3f3;padding:1px 5px;border-radius:4px}h1{font-size:20px}li{m
 <li><code>GET  /api/messages?userId=&peerId=&before=&after=&limit=</code> — message history</li>
 <li><code>POST /api/messages</code> — <code>{ fromId, toId, ciphertext, id?, ts? }</code> (web send)</li>
 <li><code>POST /api/poll</code> — trigger an immediate Touchgym poll</li>
-<li><code>POST /api/ensure</code> — ensure the 10s polling loop is running</li>
+<li><code>POST /api/ensure</code> — ensure the adaptive polling loop is running</li>
 </ul></body></html>`),
   )
 
@@ -224,8 +224,9 @@ export { Poller };
 export default {
   fetch: app.fetch,
   /**
-   * Cron heartbeat (every minute) that keeps the Durable Object's 10-second
-   * alarm loop alive. The DO does the real 10s polling between heartbeats.
+   * Cron heartbeat (every minute) that keeps the Durable Object's adaptive
+   * poll alarm alive (1-min idle / 2-sec active, paused 00:00–05:00 KST). The
+   * DO does the real polling between heartbeats; this only revives a dead alarm.
    */
   async scheduled(_event: ScheduledController, env: Bindings): Promise<void> {
     await pollerStub(env).fetch("https://poller/ensure", { method: "POST" });

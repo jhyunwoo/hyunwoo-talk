@@ -2,6 +2,8 @@ import { DurableObject } from "cloudflare:workers";
 import { eq, inArray } from "drizzle-orm";
 import {
   appendToMemo,
+  kstHour,
+  msUntilKstHour,
   parseMemo,
   pruneMemo,
   type ChatMessage,
@@ -19,13 +21,27 @@ import {
 } from "./lib/touchgym";
 import { sendWebPush, type VapidDetails } from "./lib/push";
 
-const POLL_INTERVAL_MS = 10_000;
+const IDLE_INTERVAL_MS = 60_000; // normal polling: once a minute
+const ACTIVE_INTERVAL_MS = 2_000; // fast polling while a chat is active
+const ACTIVE_WINDOW_MS = 60 * 60 * 1000; // active mode lasts 1h after each message
+const QUIET_START_HOUR = 0; // no polling from 00:00 ...
+const QUIET_END_HOUR = 5; // ... until 05:00 KST
 const SESSION_KEY = "phpsessid";
+const ACTIVE_UNTIL_KEY = "active-until"; // unix ms; fast-poll until this time
+
+/** True during the 00:00–05:00 KST window when we pause the polling read loop. */
+function inQuietHours(now: number = Date.now()): boolean {
+  const hour = kstHour(now);
+  return hour >= QUIET_START_HOUR && hour < QUIET_END_HOUR;
+}
 
 /**
  * One Durable Object instance per mailbox `seq`. It owns the Touchgym session
  * and is the single writer to both the memo and the database, which keeps the
- * 10-second polling loop and outbound sends race-free.
+ * polling loop and outbound sends race-free.
+ *
+ * Polling is adaptive: once a minute while idle, every 2 seconds for an hour
+ * after any message is sent or received, and fully paused 00:00–05:00 KST.
  */
 export class Poller extends DurableObject<Bindings> {
   private db: Db;
@@ -45,12 +61,13 @@ export class Poller extends DurableObject<Bindings> {
         }
         case "/poll": {
           const result = await this.poll();
-          await this.ensureAlarm();
+          await this.scheduleNextAlarm();
           return Response.json({ ok: true, ...result });
         }
         case "/send": {
           const message = (await request.json()) as ChatMessage;
           await this.send(message);
+          await this.scheduleNextAlarm();
           return Response.json({ ok: true });
         }
         default:
@@ -65,19 +82,39 @@ export class Poller extends DurableObject<Bindings> {
   /** Durable Object alarm — fires the recurring poll and reschedules itself. */
   override async alarm(): Promise<void> {
     try {
-      await this.poll();
+      if (!inQuietHours()) await this.poll();
     } catch (err) {
       console.error("[poller] poll failed:", err);
     } finally {
-      await this.ctx.storage.setAlarm(Date.now() + POLL_INTERVAL_MS);
+      await this.scheduleNextAlarm();
     }
+  }
+
+  /**
+   * Schedule the next poll: skip to 05:00 KST during quiet hours, otherwise
+   * every 2s while a chat is active (a message was sent/received in the last
+   * hour) and every minute when idle.
+   */
+  private async scheduleNextAlarm(): Promise<void> {
+    const now = Date.now();
+    if (inQuietHours(now)) {
+      await this.ctx.storage.setAlarm(now + msUntilKstHour(QUIET_END_HOUR, now));
+      return;
+    }
+    const activeUntil =
+      (await this.ctx.storage.get<number>(ACTIVE_UNTIL_KEY)) ?? 0;
+    const interval = now < activeUntil ? ACTIVE_INTERVAL_MS : IDLE_INTERVAL_MS;
+    await this.ctx.storage.setAlarm(now + interval);
   }
 
   private async ensureAlarm(): Promise<void> {
     const current = await this.ctx.storage.getAlarm();
-    if (current === null) {
-      await this.ctx.storage.setAlarm(Date.now() + 1_000);
-    }
+    if (current !== null) return;
+    const now = Date.now();
+    const delay = inQuietHours(now)
+      ? msUntilKstHour(QUIET_END_HOUR, now)
+      : 1_000;
+    await this.ctx.storage.setAlarm(now + delay);
   }
 
   /** Run a request with the cached session, re-logging in once if it expired. */
@@ -136,6 +173,7 @@ export class Poller extends DurableObject<Bindings> {
             await this.notify(message);
           }
           ingested = fresh.length;
+          await this.armActiveWindow();
         }
       }
 
@@ -163,6 +201,13 @@ export class Poller extends DurableObject<Bindings> {
       .insert(messages)
       .values(this.toRow(message, seq))
       .onConflictDoNothing();
+
+    await this.armActiveWindow();
+  }
+
+  /** Enter (or extend) fast-poll mode for an hour after any message activity. */
+  private async armActiveWindow(): Promise<void> {
+    await this.ctx.storage.put(ACTIVE_UNTIL_KEY, Date.now() + ACTIVE_WINDOW_MS);
   }
 
   private toRow(message: ChatMessage, mailboxSeq: string) {

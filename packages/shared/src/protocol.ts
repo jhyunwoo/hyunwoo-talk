@@ -62,6 +62,21 @@ export function serializeMemo(messages: ChatMessage[]): string {
     .join("\n");
 }
 
+/** Current hour (0–23) in KST. */
+export function kstHour(now: number = Date.now()): number {
+  const shifted = now + KST_OFFSET_MS;
+  return Math.floor((shifted % DAY_MS) / (60 * 60 * 1000));
+}
+
+/** Milliseconds from `now` until the next occurrence of `hour:00` KST. */
+export function msUntilKstHour(hour: number, now: number = Date.now()): number {
+  const shifted = now + KST_OFFSET_MS;
+  const startOfTodayShifted = Math.floor(shifted / DAY_MS) * DAY_MS;
+  let target = startOfTodayShifted + hour * 60 * 60 * 1000;
+  if (target <= shifted) target += DAY_MS;
+  return target - shifted;
+}
+
 /**
  * Start (unix ms) of "yesterday" in KST. Touchgym only retains yesterday and
  * today, so the backend prunes anything older than this from the memo while
