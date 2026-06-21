@@ -1,0 +1,19 @@
+{
+  "name": "Hyunwoo Talk",
+  "short_name": "HyunwooTalk",
+  "description": "종단간 암호화 1:1 메시지 서비스",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0e0f1a",
+  "theme_color": "#5b5bd6",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

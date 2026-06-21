@@ -1,0 +1,47 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "api",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-06-21",
+  "observability": {
+    "enabled": true
+  },
+  "triggers": {
+    // Heartbeat that keeps the Durable Object's 10-second poll alarm alive.
+    "crons": ["* * * * *"]
+  },
+  "vars": {
+    // Touchgym member `seq` used as the shared mailbox.
+    "MAILBOX_SEQ": "5966856",
+    // Touchgym club id (non-secret). Set TOUCHGYM_ID / TOUCHGYM_PASSWORD as
+    // secrets via `wrangler secret put` (or .dev.vars for local dev).
+    "TOUCHGYM_CLUB_ID": "grd2",
+    "VAPID_SUBJECT": "mailto:support@moveto.kr",
+    // Public VAPID key (non-secret). Generate a keypair with
+    // `npx web-push generate-vapid-keys` and put the private key in secrets.
+    "VAPID_PUBLIC_KEY": "BLXKb0ALI2_0WXeMIS9zoMwX7n6sFXlGJwY8UH01TxKMNxyv3jP6iuT0EdlXx9g2iqp8Hjrjh76tE_BNrkfzkps",
+    "CORS_ORIGIN": "*"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "hyunwoo-talk",
+      "database_id": "db956e31-c40a-4590-8fab-ab0e8d268082",
+      "migrations_dir": "drizzle"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "POLLER",
+        "class_name": "Poller"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["Poller"]
+    }
+  ]
+}

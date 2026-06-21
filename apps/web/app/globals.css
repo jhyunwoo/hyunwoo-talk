@@ -1,0 +1,57 @@
+:root {
+  --bg: #0e0f1a;
+  --bg-elev: #171928;
+  --surface: #1d2030;
+  --surface-2: #262a3d;
+  --border: #2c3047;
+  --text: #e9eaff;
+  --text-dim: #9aa0bf;
+  --accent: #6d6df0;
+  --accent-2: #8a7bf0;
+  --mine: linear-gradient(135deg, #6d6df0, #8a6cf0);
+  --theirs: #262a3d;
+  --danger: #ff6b6b;
+  --radius: 18px;
+  --maxw: 720px;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family:
+    "Apple SD Gothic Neo", "Pretendard", system-ui, -apple-system,
+    "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;
+}
+
+#__next,
+body > div {
+  height: 100%;
+}
+
+input,
+textarea,
+button {
+  font-family: inherit;
+}
+
+.appLoading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100dvh;
+  color: var(--text-dim);
+}

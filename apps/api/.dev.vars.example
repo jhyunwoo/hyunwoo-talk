@@ -1,0 +1,9 @@
+# Local development secrets for `wrangler dev`. Copy to `.dev.vars` and fill in.
+# (.dev.vars is git-ignored; never commit real credentials.)
+
+TOUCHGYM_ID="your-touchgym-admin-id"
+TOUCHGYM_PASSWORD="your-touchgym-admin-password"
+
+# Generate a keypair: `npx web-push generate-vapid-keys`
+# Put the PUBLIC key in wrangler.jsonc -> vars.VAPID_PUBLIC_KEY
+VAPID_PRIVATE_KEY="your-vapid-private-key-base64url"
