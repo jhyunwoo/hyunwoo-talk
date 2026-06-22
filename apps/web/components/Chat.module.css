@@ -47,6 +47,12 @@
   color: var(--text-dim);
 }
 
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .logout {
   background: var(--surface-2);
   border: 1px solid var(--border);
@@ -59,6 +65,33 @@
 
 .logout:hover {
   color: var(--text);
+}
+
+.notify {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  border-radius: 10px;
+  cursor: pointer;
+  padding: 0;
+}
+
+.notify:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.notify:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.notifyOn {
+  color: var(--accent);
+  border-color: var(--accent);
 }
 
 .messages {

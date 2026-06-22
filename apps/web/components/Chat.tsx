@@ -8,7 +8,7 @@ import {
   type DecryptedMessage,
 } from "@repo/shared";
 import { fetchMessages, sendMessage } from "../lib/api";
-import { enablePush, pushSupported } from "../lib/push";
+import { disablePush, enablePush, pushSupported } from "../lib/push";
 import type { AuthState } from "../lib/store";
 import { Composer } from "./Composer";
 import styles from "./Chat.module.css";
@@ -41,7 +41,10 @@ export function Chat({ auth, onLogout }: ChatProps) {
   const [hasMore, setHasMore] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [ready, setReady] = useState(false);
+  const [pushSupport, setPushSupport] = useState(false);
   const [pushOn, setPushOn] = useState(false);
+  const [pushBusy, setPushBusy] = useState(false);
+  const [pushDenied, setPushDenied] = useState(false);
 
   const seenIds = useRef<Set<string>>(new Set());
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -132,13 +135,38 @@ export function Chat({ auth, onLogout }: ChatProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, items, userId, peerId, password]);
 
-  // Enable push once on mount (best-effort).
+  // Reflect the current notification state on mount without prompting. If the
+  // user already granted permission, silently refresh the subscription so the
+  // backend stays in sync; otherwise wait for them to press the bell button.
   useEffect(() => {
     if (!pushSupported()) return;
-    enablePush(userId)
-      .then(setPushOn)
-      .catch(() => setPushOn(false));
+    setPushSupport(true);
+    setPushDenied(Notification.permission === "denied");
+    if (Notification.permission === "granted") {
+      enablePush(userId)
+        .then(setPushOn)
+        .catch(() => setPushOn(false));
+    }
   }, [userId]);
+
+  const togglePush = useCallback(async () => {
+    if (pushBusy) return;
+    setPushBusy(true);
+    try {
+      if (pushOn) {
+        await disablePush();
+        setPushOn(false);
+      } else {
+        const ok = await enablePush(userId);
+        setPushOn(ok);
+        setPushDenied(!ok && Notification.permission === "denied");
+      }
+    } catch {
+      setPushOn(false);
+    } finally {
+      setPushBusy(false);
+    }
+  }, [pushBusy, pushOn, userId]);
 
   const loadOlder = useCallback(async () => {
     if (loadingOlder || !hasMore || items.length === 0) return;
@@ -195,17 +223,33 @@ export function Chat({ auth, onLogout }: ChatProps) {
           <div>
             <div className={styles.peerName}>{peerId}</div>
             <div className={styles.peerMeta}>
-              {pushSupported()
-                ? pushOn
-                  ? "알림 켜짐 · 종단간 암호화"
-                  : "종단간 암호화"
-                : "종단간 암호화"}
+              {pushOn ? "알림 켜짐 · 종단간 암호화" : "종단간 암호화"}
             </div>
           </div>
         </div>
-        <button className={styles.logout} onClick={onLogout} title="로그아웃">
-          나가기
-        </button>
+        <div className={styles.actions}>
+          {pushSupport && (
+            <button
+              className={`${styles.notify} ${pushOn ? styles.notifyOn : ""}`}
+              onClick={togglePush}
+              disabled={pushBusy}
+              aria-pressed={pushOn}
+              title={
+                pushOn
+                  ? "알림 끄기"
+                  : pushDenied
+                    ? "브라우저에서 알림이 차단되어 있습니다"
+                    : "알림 켜기"
+              }
+              aria-label="알림 설정"
+            >
+              {pushOn ? <BellOnIcon /> : <BellOffIcon />}
+            </button>
+          )}
+          <button className={styles.logout} onClick={onLogout} title="로그아웃">
+            나가기
+          </button>
+        </div>
       </header>
 
       <div className={styles.messages} ref={scrollRef} onScroll={onScroll}>
@@ -249,6 +293,47 @@ export function Chat({ auth, onLogout }: ChatProps) {
 
       <Composer onSend={handleSend} />
     </div>
+  );
+}
+
+function BellOnIcon() {
+  return (
+    <svg
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" />
+      <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" />
+    </svg>
+  );
+}
+
+function BellOffIcon() {
+  return (
+    <svg
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+      <path d="M18.63 13A17.89 17.89 0 0 1 18 8" />
+      <path d="M6.26 6.26A5.86 5.86 0 0 0 6 8c0 7-3 9-3 9h14" />
+      <path d="M18 8a6 6 0 0 0-9.33-5" />
+      <line x1="1" y1="1" x2="23" y2="23" />
+    </svg>
   );
 }
 

@@ -1,4 +1,4 @@
-import { getVapidPublicKey, subscribePush } from "./api";
+import { getVapidPublicKey, subscribePush, unsubscribePush } from "./api";
 
 function urlBase64ToUint8Array(base64: string): Uint8Array<ArrayBuffer> {
   const padding = "=".repeat((4 - (base64.length % 4)) % 4);
@@ -58,4 +58,20 @@ export async function enablePush(userId: string): Promise<boolean> {
     keys: { p256dh: json.keys.p256dh, auth: json.keys.auth },
   });
   return true;
+}
+
+/**
+ * Cancel the push subscription for this device and tell the backend to forget
+ * it. Safe to call when nothing is subscribed.
+ */
+export async function disablePush(): Promise<void> {
+  if (!pushSupported()) return;
+
+  const registration = await navigator.serviceWorker.getRegistration();
+  const subscription = await registration?.pushManager.getSubscription();
+  if (!subscription) return;
+
+  const { endpoint } = subscription;
+  await subscription.unsubscribe();
+  await unsubscribePush(endpoint);
 }

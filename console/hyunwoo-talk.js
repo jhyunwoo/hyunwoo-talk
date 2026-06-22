@@ -143,8 +143,23 @@
   }
 
   // ---- Touchgym memo read/write -----------------------------------------
+  const REQUEST_TIMEOUT_MS = 15000;
+
+  // fetch with a hard timeout so a stuck request releases its socket instead of
+  // hanging forever (Touchgym's hosts can stall; leaked sockets pile up and
+  // eventually trigger ERR_NO_BUFFER_SPACE for every request on the page).
+  async function fetchWithTimeout(url, options) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    try {
+      return await fetch(url, { ...options, signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   async function fetchMemberDoc() {
-    const res = await fetch(
+    const res = await fetchWithTimeout(
       `${APP_ORIGIN}/m/member/minfo.php?qa=1&seq=${encodeURIComponent(SEQ)}`,
       { credentials: "include" },
     );
@@ -185,7 +200,7 @@
     });
     body.set("memo", newMemo);
 
-    const res = await fetch(
+    const res = await fetchWithTimeout(
       `${APP_ORIGIN}/m/member/minfo.php?seq=${encodeURIComponent(SEQ)}&q=w`,
       {
         method: "POST",
@@ -204,6 +219,7 @@
     targetId: null,
     seen: new Set(),
     timer: null,
+    pollGen: 0,
   };
 
   const C = {
@@ -252,11 +268,78 @@
     }
   }
 
+  // Self-chaining poll loop: the next poll is scheduled only AFTER the current
+  // one settles, so there is never more than one request in flight. (setInterval
+  // would keep firing into a stalled network and stack up hung sockets.) The
+  // generation token supersedes any prior loop when login() restarts polling.
   function startPolling() {
-    if (state.timer) clearInterval(state.timer);
-    state.timer = setInterval(() => {
-      poll().catch((e) => console.warn("%c[폴링 오류] " + e.message, C.err));
-    }, POLL_INTERVAL_MS);
+    const gen = ++state.pollGen;
+    if (state.timer) {
+      clearTimeout(state.timer);
+      state.timer = null;
+    }
+    const tick = async () => {
+      if (gen !== state.pollGen) return;
+      try {
+        await poll();
+      } catch (e) {
+        console.warn("%c[폴링 오류] " + e.message, C.err);
+      } finally {
+        if (gen === state.pollGen) state.timer = setTimeout(tick, POLL_INTERVAL_MS);
+      }
+    };
+    state.timer = setTimeout(tick, POLL_INTERVAL_MS);
+  }
+
+  // ---- Touchgym heartbeat throttle --------------------------------------
+  // The member page runs its own SSL-check heartbeat (getLog2ssl → $.ajax to
+  // c4.touchgym.co.kr/checking_ssl.php → scheduleLog → repeat). When that host
+  // stalls, the loop retries hard and exhausts the browser's socket pool
+  // (net::ERR_NO_BUFFER_SPACE), which then breaks every request on the page —
+  // including our polling. We wrap getLog2ssl to admit at most one real call
+  // per HEARTBEAT_MIN_MS, owning the rescheduling during the cooldown so the
+  // heartbeat stays alive but can no longer flood. Reload the page to undo.
+  const HEARTBEAT_MIN_MS = 30000;
+
+  function throttleTouchgymHeartbeat() {
+    if (typeof window.getLog2ssl !== "function") {
+      console.warn(
+        "%c[하트비트 throttle] getLog2ssl 함수를 찾지 못해 적용하지 않았습니다 (Touchgym 페이지 구조 변경?).",
+        C.sys,
+      );
+      return;
+    }
+    if (window.getLog2ssl.__hwtThrottled) return; // already wrapped
+
+    const orig = window.getLog2ssl;
+    let last = 0;
+    let cooldown = false;
+
+    function throttled() {
+      const wait = last + HEARTBEAT_MIN_MS - Date.now();
+      if (wait > 0) {
+        // Too soon: skip the network call. Because we don't fire the ajax, the
+        // page's own complete→scheduleLog won't run, so we reschedule one retry
+        // ourselves after the cooldown. `cooldown` prevents stacking timers.
+        if (!cooldown) {
+          cooldown = true;
+          setTimeout(function () {
+            cooldown = false;
+            throttled();
+          }, wait);
+        }
+        return;
+      }
+      last = Date.now();
+      return orig.apply(this, arguments);
+    }
+
+    throttled.__hwtThrottled = true;
+    window.getLog2ssl = throttled;
+    console.log(
+      `%c[하트비트 throttle] Touchgym SSL 점검 호출을 최소 ${HEARTBEAT_MIN_MS / 1000}초 간격으로 제한합니다.`,
+      C.ok,
+    );
   }
 
   // ---- Public API --------------------------------------------------------
@@ -360,6 +443,10 @@
 
   // Expose on window so the functions are callable from the console.
   Object.assign(window, { login, sendTo, send, resetTarget, help });
+
+  // Tame the Touchgym page's runaway SSL-check heartbeat so it can't exhaust
+  // the browser's sockets (net::ERR_NO_BUFFER_SPACE) while we wait for messages.
+  throttleTouchgymHeartbeat();
 
   console.log("%c💬 Hyunwoo Talk 콘솔 클라이언트가 로드되었습니다.", "color:#6d6df0;font-weight:bold;font-size:14px");
   help();

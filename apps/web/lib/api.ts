@@ -69,3 +69,11 @@ export async function subscribePush(
     body: JSON.stringify({ userId, subscription }),
   });
 }
+
+export async function unsubscribePush(endpoint: string): Promise<void> {
+  await fetch(`${API_BASE}/api/push/unsubscribe`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ endpoint }),
+  });
+}
