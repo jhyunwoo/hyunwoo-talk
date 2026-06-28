@@ -24,17 +24,27 @@ export async function registerServiceWorker(): Promise<ServiceWorkerRegistration
 }
 
 /**
- * Request notification permission and register a push subscription for
- * `userId`. Returns true on success. Safe to call repeatedly.
+ * Ensure a push subscription exists for `userId` and is registered with the
+ * backend. When `allowPrompt` is false the permission state is only *read*
+ * (never prompted), so this is safe to call on mount: iOS Safari rejects
+ * `Notification.requestPermission()` outside a user gesture — even when
+ * permission was already granted — which would otherwise make a previously
+ * enabled device look disabled (e.g. after the PWA is deleted and reopened).
  */
-export async function enablePush(userId: string): Promise<boolean> {
+async function ensureSubscription(
+  userId: string,
+  allowPrompt: boolean,
+): Promise<boolean> {
   if (!pushSupported()) return false;
+
+  if (allowPrompt) {
+    if ((await Notification.requestPermission()) !== "granted") return false;
+  } else if (Notification.permission !== "granted") {
+    return false;
+  }
 
   const vapidPublicKey = await getVapidPublicKey();
   if (!vapidPublicKey) return false;
-
-  const permission = await Notification.requestPermission();
-  if (permission !== "granted") return false;
 
   const registration =
     (await navigator.serviceWorker.getRegistration()) ??
@@ -58,6 +68,24 @@ export async function enablePush(userId: string): Promise<boolean> {
     keys: { p256dh: json.keys.p256dh, auth: json.keys.auth },
   });
   return true;
+}
+
+/**
+ * Turn on push from a user gesture (the bell button). May show the browser
+ * permission prompt. Returns true once subscribed.
+ */
+export function enablePush(userId: string): Promise<boolean> {
+  return ensureSubscription(userId, true);
+}
+
+/**
+ * Reflect/restore push state on load WITHOUT prompting. Returns true when
+ * permission is already granted and a subscription is active — re-creating and
+ * re-syncing the subscription to the backend if it was lost (e.g. the PWA was
+ * reinstalled). Returns false otherwise; never prompts.
+ */
+export function refreshPush(userId: string): Promise<boolean> {
+  return ensureSubscription(userId, false);
 }
 
 /**

@@ -1,10 +1,19 @@
 .chat {
+  /* Pinned to the visual viewport (set from window.visualViewport) so the
+     mobile keyboard shrinks the chat instead of scrolling the header away.
+     Falls back to 100dvh where visualViewport isn't wired up. */
+  position: fixed;
+  top: var(--app-offset-top, 0px);
+  left: 0;
+  right: 0;
+  margin-inline: auto;
+  width: 100%;
+  max-width: var(--maxw);
+  height: var(--app-height, 100dvh);
   display: flex;
   flex-direction: column;
-  height: 100dvh;
-  max-width: var(--maxw);
-  margin: 0 auto;
   background: var(--bg);
+  overflow: hidden;
 }
 
 .header {
@@ -96,24 +105,79 @@
 
 .messages {
   flex: 1;
+  /* Without min-height:0 a flex child won't shrink below its content height, so
+     when the keyboard shrinks .chat the list overflows and pushes the header up
+     and the composer off-screen. This keeps the list bounded and scrollable. */
+  min-height: 0;
   overflow-y: auto;
+  /* Stop scroll chaining to the page, which on iOS shifts the visual viewport
+     and detaches the fixed header while the keyboard is open. */
+  overscroll-behavior: contain;
   padding: 16px;
   display: flex;
   flex-direction: column;
   gap: 4px;
-  scroll-behavior: smooth;
 }
 
-.loadMore,
-.empty {
-  text-align: center;
+.loadMore {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
   color: var(--text-dim);
   font-size: 13px;
   padding: 10px 0 16px;
 }
 
 .empty {
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 13px;
+  padding: 10px 0 16px;
   margin: auto 0;
+}
+
+/* Centered spinner shown while the initial chat history loads. */
+.loading {
+  margin: auto 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.spinner {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  animation: spin 0.75s linear infinite;
+}
+
+/* Inline spinner for the "load older messages" indicator. */
+.miniSpinner {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner,
+  .miniSpinner {
+    animation-duration: 1.6s;
+  }
 }
 
 .daySep {

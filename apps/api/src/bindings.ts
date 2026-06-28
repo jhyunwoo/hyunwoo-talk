@@ -23,6 +23,9 @@ export interface Bindings {
 
   /** Allowed CORS origin, or `*`. */
   CORS_ORIGIN: string;
+
+  /** Shared admin password gating the analytics dashboard endpoints (secret). */
+  ADMIN_TOKEN: string;
 }
 
 export interface AppEnv {

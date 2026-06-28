@@ -77,3 +77,42 @@ export async function unsubscribePush(endpoint: string): Promise<void> {
     body: JSON.stringify({ endpoint }),
   });
 }
+
+/**
+ * Fire-and-forget visitor telemetry. Reports the device/environment details
+ * only the browser can see; the server enriches it with ip/geo from the
+ * Cloudflare request. Must never throw or block the UI.
+ */
+export async function recordVisit(userId?: string): Promise<void> {
+  if (typeof window === "undefined") return;
+  try {
+    const nav = navigator as Navigator & {
+      deviceMemory?: number;
+      connection?: { effectiveType?: string };
+    };
+    const payload = {
+      userId,
+      page: location.pathname + location.search,
+      referrer: document.referrer || null,
+      language: nav.language || null,
+      languages: nav.languages?.length ? nav.languages.join(",") : null,
+      timezone:
+        Intl.DateTimeFormat().resolvedOptions().timeZone || null,
+      screen: `${window.screen.width}x${window.screen.height}`,
+      viewport: `${window.innerWidth}x${window.innerHeight}`,
+      pixelRatio: window.devicePixelRatio || null,
+      cpuCores: nav.hardwareConcurrency ?? null,
+      deviceMemory: nav.deviceMemory ?? null,
+      touch: (nav.maxTouchPoints ?? 0) > 0,
+      connection: nav.connection?.effectiveType ?? null,
+    };
+    await fetch(`${API_BASE}/api/visit`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      keepalive: true,
+    });
+  } catch {
+    /* telemetry must never break the app */
+  }
+}

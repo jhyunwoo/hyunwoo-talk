@@ -18,6 +18,26 @@
  * to the console automatically. Messages are AES-GCM encrypted with the shared
  * password — both sides must use the same password.
  *
+ * ── Loading without a file (stash the script in a Touchgym memo) ──────────
+ * Pasting this raw file is awkward when you only have the Touchgym UI. The
+ * memo field also corrupts raw JS (it HTML-escapes < > & " ' and can mangle
+ * newlines), so a script copied back out won't run. Instead, store the
+ * base64 build and load it with a one-liner:
+ *
+ *   1. Copy ALL of `console/hyunwoo-talk.b64.txt` (one line) into any member's
+ *      memo field and save. base64 is only [A-Za-z0-9+/=], so the memo can't
+ *      corrupt it.
+ *   2. Later, copy that memo text and run this single line in the console:
+ *
+ *          eval(atob(prompt()))
+ *
+ *      Paste the base64 into the prompt → the full client loads (Hangul/emoji
+ *      intact, because the build \u-escapes all non-ASCII before encoding).
+ *
+ * Regenerate the base64 build after editing this file:
+ *
+ *          node console/build-b64.mjs
+ *
  * Edit SEQ below to the Touchgym member `seq` that both parties use as the
  * shared mailbox (the same value the backend uses for MAILBOX_SEQ).
  * ========================================================================= */

@@ -2,11 +2,27 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
-import { and, desc, eq, gt, lt, or, asc } from "drizzle-orm";
+import {
+  and,
+  asc,
+  count,
+  desc,
+  eq,
+  gt,
+  gte,
+  like,
+  lt,
+  lte,
+  or,
+  sql,
+  type SQL,
+} from "drizzle-orm";
 import { newMessageId, type ChatMessage } from "@repo/shared";
 import type { AppEnv, Bindings } from "./bindings";
 import { getDb } from "./db";
-import { messages, pushSubscriptions } from "./db/schema";
+import { messages, pushSubscriptions, visits } from "./db/schema";
+import { adminAuth } from "./lib/admin";
+import { parseUserAgent } from "./lib/ua";
 import { Poller } from "./poller";
 
 /** Resolve the single Durable Object that owns the configured mailbox. */
@@ -16,15 +32,58 @@ function pollerStub(env: Bindings) {
 
 const userId = z.string().min(1).max(64).regex(/^[^|]+$/, "id must not contain |");
 
+/** Querystring filter shared by the admin analytics endpoints. */
+const visitFilterShape = {
+  from: z.coerce.number().int().nonnegative().optional(),
+  to: z.coerce.number().int().positive().optional(),
+  country: z.string().max(8).optional(),
+  deviceType: z.string().max(16).optional(),
+  browser: z.string().max(64).optional(),
+  q: z.string().max(128).optional(),
+};
+
+interface VisitFilter {
+  from?: number;
+  to?: number;
+  country?: string;
+  deviceType?: string;
+  browser?: string;
+  q?: string;
+}
+
+/** Translate a filter into a list of Drizzle WHERE conditions over `visits`. */
+function visitConditions(f: VisitFilter): SQL[] {
+  const conds: SQL[] = [];
+  if (f.from !== undefined) conds.push(gte(visits.createdAt, f.from));
+  if (f.to !== undefined) conds.push(lte(visits.createdAt, f.to));
+  if (f.country) conds.push(eq(visits.country, f.country));
+  if (f.deviceType) conds.push(eq(visits.deviceType, f.deviceType));
+  if (f.browser) conds.push(eq(visits.browser, f.browser));
+  if (f.q) {
+    const term = `%${f.q}%`;
+    conds.push(
+      or(
+        like(visits.ip, term),
+        like(visits.city, term),
+        like(visits.userId, term),
+      )!,
+    );
+  }
+  return conds;
+}
+
 const app = new Hono<AppEnv>();
 
 app.use("*", (c, next) =>
   cors({
     origin: c.env.CORS_ORIGIN || "*",
     allowMethods: ["GET", "POST", "OPTIONS"],
-    allowHeaders: ["Content-Type"],
+    allowHeaders: ["Content-Type", "Authorization"],
   })(c, next),
 );
+
+// Gate every analytics endpoint behind the admin token.
+app.use("/api/admin/*", adminAuth);
 
 const routes = app
   .get("/", (c) =>
@@ -39,6 +98,9 @@ code{background:#f3f3f3;padding:1px 5px;border-radius:4px}h1{font-size:20px}li{m
 <li><code>GET  /api/push/vapid-public-key</code> — VAPID public key for the web client</li>
 <li><code>POST /api/push/subscribe</code> — <code>{ userId, subscription }</code></li>
 <li><code>POST /api/push/unsubscribe</code> — <code>{ endpoint }</code></li>
+<li><code>POST /api/visit</code> — record visitor telemetry (client posts device info; server adds ip/geo)</li>
+<li><code>GET  /api/admin/visits?from=&to=&country=&deviceType=&browser=&q=&before=&limit=</code> — visit log (admin)</li>
+<li><code>GET  /api/admin/stats</code> — visit aggregates for the dashboard (admin)</li>
 <li><code>GET  /api/messages?userId=&peerId=&before=&after=&limit=</code> — message history</li>
 <li><code>POST /api/messages</code> — <code>{ fromId, toId, ciphertext, id?, ts? }</code> (web send)</li>
 <li><code>POST /api/poll</code> — trigger an immediate Touchgym poll</li>
@@ -101,6 +163,201 @@ code{background:#f3f3f3;padding:1px 5px;border-radius:4px}h1{font-size:20px}li{m
         .delete(pushSubscriptions)
         .where(eq(pushSubscriptions.endpoint, endpoint));
       return c.json({ ok: true });
+    },
+  )
+
+  // Visitor telemetry: the browser posts what only it can see (screen, timezone,
+  // cpu/memory…), and we enrich it server-side with the Cloudflare request
+  // (ip, geo, asn, tls…). Best-effort; never blocks the page.
+  .post(
+    "/api/visit",
+    zValidator(
+      "json",
+      z.object({
+        userId: z.string().max(64).optional(),
+        page: z.string().max(1024).nullish(),
+        referrer: z.string().max(2048).nullish(),
+        language: z.string().max(64).nullish(),
+        languages: z.string().max(512).nullish(),
+        timezone: z.string().max(64).nullish(),
+        screen: z.string().max(32).nullish(),
+        viewport: z.string().max(32).nullish(),
+        pixelRatio: z.number().nullish(),
+        cpuCores: z.number().int().nullish(),
+        deviceMemory: z.number().nullish(),
+        touch: z.boolean().nullish(),
+        connection: z.string().max(32).nullish(),
+      }),
+    ),
+    async (c) => {
+      const b = c.req.valid("json");
+      const cf = c.req.raw.cf;
+      const ua = c.req.header("User-Agent") ?? null;
+      const parsed = parseUserAgent(ua ?? "");
+
+      const db = getDb(c.env.DB);
+      const row: typeof visits.$inferInsert = {
+        userId: b.userId ?? null,
+        ip:
+          c.req.header("CF-Connecting-IP") ??
+          c.req.header("X-Forwarded-For") ??
+          null,
+        userAgent: ua,
+        browser: parsed.browser,
+        os: parsed.os,
+        deviceType: parsed.deviceType,
+        page: b.page ?? null,
+        referrer: b.referrer ?? null,
+        language: b.language ?? null,
+        acceptLanguage: c.req.header("Accept-Language") ?? null,
+        languages: b.languages ?? null,
+        timezone: b.timezone ?? null,
+        screen: b.screen ?? null,
+        viewport: b.viewport ?? null,
+        pixelRatio: b.pixelRatio ?? null,
+        cpuCores: b.cpuCores ?? null,
+        deviceMemory: b.deviceMemory ?? null,
+        touch: b.touch ?? null,
+        connectionType: b.connection ?? null,
+        country: (cf?.country as string | undefined) ?? null,
+        region: (cf?.region as string | undefined) ?? null,
+        city: (cf?.city as string | undefined) ?? null,
+        postalCode: (cf?.postalCode as string | undefined) ?? null,
+        latitude: (cf?.latitude as string | undefined) ?? null,
+        longitude: (cf?.longitude as string | undefined) ?? null,
+        cfTimezone: (cf?.timezone as string | undefined) ?? null,
+        asn: (cf?.asn as number | undefined) ?? null,
+        asOrganization: (cf?.asOrganization as string | undefined) ?? null,
+        httpProtocol: (cf?.httpProtocol as string | undefined) ?? null,
+        tlsVersion: (cf?.tlsVersion as string | undefined) ?? null,
+        cfRay: c.req.header("CF-Ray") ?? null,
+        createdAt: Date.now(),
+      };
+      await db.insert(visits).values(row);
+      return c.json({ ok: true });
+    },
+  )
+
+  // ── Admin analytics (all behind `adminAuth`) ───────────────────────────────
+
+  // Lets the dashboard validate the entered password; reaching here = authorized.
+  .post("/api/admin/verify", (c) => c.json({ ok: true }))
+
+  // Filtered, paginated visit log (newest first). Powers the table and the map.
+  .get(
+    "/api/admin/visits",
+    zValidator(
+      "query",
+      z.object({
+        ...visitFilterShape,
+        before: z.coerce.number().int().positive().optional(),
+        limit: z.coerce.number().int().min(1).max(1000).default(200),
+      }),
+    ),
+    async (c) => {
+      const f = c.req.valid("query");
+      const db = getDb(c.env.DB);
+      const conds = visitConditions(f);
+      if (f.before !== undefined) conds.push(lt(visits.createdAt, f.before));
+      const where = conds.length ? and(...conds) : undefined;
+
+      const rows = await db
+        .select()
+        .from(visits)
+        .where(where)
+        .orderBy(desc(visits.createdAt))
+        .limit(f.limit + 1);
+
+      const hasMore = rows.length > f.limit;
+      const page = hasMore ? rows.slice(0, f.limit) : rows;
+      return c.json({ visits: page, hasMore });
+    },
+  )
+
+  // Aggregates for the summary cards, charts (time-of-day + daily trend), and
+  // the map's per-city clusters. Honors the same filters as the visit log.
+  .get(
+    "/api/admin/stats",
+    zValidator("query", z.object(visitFilterShape)),
+    async (c) => {
+      const f = c.req.valid("query");
+      const db = getDb(c.env.DB);
+      const conds = visitConditions(f);
+      const where = conds.length ? and(...conds) : undefined;
+
+      // SQLite localizes the epoch-ms timestamp to KST for the time buckets.
+      const kstHour = sql<string>`strftime('%H', datetime(${visits.createdAt} / 1000, 'unixepoch', '+9 hours'))`;
+      const kstDay = sql<string>`strftime('%Y-%m-%d', datetime(${visits.createdAt} / 1000, 'unixepoch', '+9 hours'))`;
+
+      const [totals] = await db
+        .select({
+          total: count(),
+          uniqueIps: sql<number>`COUNT(DISTINCT ${visits.ip})`,
+        })
+        .from(visits)
+        .where(where);
+
+      const byCountry = await db
+        .select({ key: visits.country, count: count() })
+        .from(visits)
+        .where(where)
+        .groupBy(visits.country)
+        .orderBy(desc(count()))
+        .limit(20);
+
+      const byDevice = await db
+        .select({ key: visits.deviceType, count: count() })
+        .from(visits)
+        .where(where)
+        .groupBy(visits.deviceType)
+        .orderBy(desc(count()));
+
+      const byBrowser = await db
+        .select({ key: visits.browser, count: count() })
+        .from(visits)
+        .where(where)
+        .groupBy(visits.browser)
+        .orderBy(desc(count()))
+        .limit(12);
+
+      const byCity = await db
+        .select({
+          city: visits.city,
+          country: visits.country,
+          lat: visits.latitude,
+          lng: visits.longitude,
+          count: count(),
+        })
+        .from(visits)
+        .where(where)
+        .groupBy(visits.city, visits.country, visits.latitude, visits.longitude)
+        .orderBy(desc(count()))
+        .limit(200);
+
+      const byHour = await db
+        .select({ key: kstHour, count: count() })
+        .from(visits)
+        .where(where)
+        .groupBy(kstHour)
+        .orderBy(asc(kstHour));
+
+      const byDay = await db
+        .select({ key: kstDay, count: count() })
+        .from(visits)
+        .where(where)
+        .groupBy(kstDay)
+        .orderBy(asc(kstDay));
+
+      return c.json({
+        total: totals?.total ?? 0,
+        uniqueIps: totals?.uniqueIps ?? 0,
+        byCountry,
+        byDevice,
+        byBrowser,
+        byCity,
+        byHour,
+        byDay,
+      });
     },
   )
 

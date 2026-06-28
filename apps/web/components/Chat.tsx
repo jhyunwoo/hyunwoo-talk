@@ -1,6 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import {
   encryptMessage,
   tryDecryptMessage,
@@ -8,7 +14,12 @@ import {
   type DecryptedMessage,
 } from "@repo/shared";
 import { fetchMessages, sendMessage } from "../lib/api";
-import { disablePush, enablePush, pushSupported } from "../lib/push";
+import {
+  disablePush,
+  enablePush,
+  pushSupported,
+  refreshPush,
+} from "../lib/push";
 import type { AuthState } from "../lib/store";
 import { Composer } from "./Composer";
 import styles from "./Chat.module.css";
@@ -16,6 +27,12 @@ import styles from "./Chat.module.css";
 const PAGE_SIZE = 50;
 const OLDER_PAGE_SIZE = 30;
 const POLL_INTERVAL_MS = 4000;
+
+// Run before paint on the client so the first visible frame is already scrolled
+// to the newest message; fall back to useEffect on the server (SSR) to avoid the
+// useLayoutEffect warning.
+const useIsomorphicLayoutEffect =
+  typeof window !== "undefined" ? useLayoutEffect : useEffect;
 
 interface ChatProps {
   auth: AuthState;
@@ -94,7 +111,6 @@ export function Chat({ auth, onLogout }: ChatProps) {
         merge(decrypted);
         setHasMore(more);
         setReady(true);
-        requestAnimationFrame(() => scrollToBottom("auto"));
       } catch {
         if (!cancelled) setReady(true);
       }
@@ -104,6 +120,19 @@ export function Chat({ auth, onLogout }: ChatProps) {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId, peerId, password]);
+
+  // Jump to the newest message on first load. Done in a layout effect — after
+  // the messages commit, before paint — so the view starts at the bottom.
+  // (The previous rAF approach raced the React commit on mobile and left the
+  // view stuck on the oldest message.) Direct scrollTop is instant regardless
+  // of any scroll-behavior, and runs only once.
+  const didInitialScroll = useRef(false);
+  useIsomorphicLayoutEffect(() => {
+    if (didInitialScroll.current || !ready) return;
+    didInitialScroll.current = true;
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [ready]);
 
   // Live polling for new messages.
   useEffect(() => {
@@ -135,19 +164,46 @@ export function Chat({ auth, onLogout }: ChatProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, items, userId, peerId, password]);
 
-  // Reflect the current notification state on mount without prompting. If the
-  // user already granted permission, silently refresh the subscription so the
-  // backend stays in sync; otherwise wait for them to press the bell button.
+  // Reflect the current notification state on mount without prompting. When
+  // permission is already granted, refreshPush silently re-subscribes (and
+  // re-syncs the backend) so a device that had push on — e.g. before the PWA
+  // was deleted and reopened — shows on again instead of falsely showing off.
   useEffect(() => {
     if (!pushSupported()) return;
     setPushSupport(true);
     setPushDenied(Notification.permission === "denied");
-    if (Notification.permission === "granted") {
-      enablePush(userId)
-        .then(setPushOn)
-        .catch(() => setPushOn(false));
-    }
+    refreshPush(userId)
+      .then(setPushOn)
+      .catch(() => setPushOn(false));
   }, [userId]);
+
+  // Keep the chat pinned to the visual viewport so the keyboard (iOS especially)
+  // doesn't scroll the header out of view. We mirror visualViewport's height and
+  // top offset into CSS variables that `.chat` consumes; when the keyboard opens
+  // we also keep the latest message in view.
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const root = document.documentElement;
+    let prevHeight = vv.height;
+    const apply = () => {
+      root.style.setProperty("--app-height", `${vv.height}px`);
+      root.style.setProperty("--app-offset-top", `${vv.offsetTop}px`);
+      if (vv.height < prevHeight - 60) {
+        requestAnimationFrame(() => scrollToBottom("auto"));
+      }
+      prevHeight = vv.height;
+    };
+    apply();
+    vv.addEventListener("resize", apply);
+    vv.addEventListener("scroll", apply);
+    return () => {
+      vv.removeEventListener("resize", apply);
+      vv.removeEventListener("scroll", apply);
+      root.style.removeProperty("--app-height");
+      root.style.removeProperty("--app-offset-top");
+    };
+  }, [scrollToBottom]);
 
   const togglePush = useCallback(async () => {
     if (pushBusy) return;
@@ -255,7 +311,20 @@ export function Chat({ auth, onLogout }: ChatProps) {
       <div className={styles.messages} ref={scrollRef} onScroll={onScroll}>
         {hasMore && (
           <div className={styles.loadMore}>
-            {loadingOlder ? "불러오는 중…" : "위로 스크롤하여 이전 대화 보기"}
+            {loadingOlder ? (
+              <>
+                <span className={styles.miniSpinner} aria-hidden="true" />
+                불러오는 중…
+              </>
+            ) : (
+              "위로 스크롤하여 이전 대화 보기"
+            )}
+          </div>
+        )}
+        {!ready && (
+          <div className={styles.loading}>
+            <span className={styles.spinner} aria-hidden="true" />
+            <span>대화를 불러오는 중…</span>
           </div>
         )}
         {ready && items.length === 0 && (

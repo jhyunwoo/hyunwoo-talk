@@ -17,6 +17,7 @@
     "@opennextjs/cloudflare": "^1.3.0",
     "@repo/shared": "workspace:*",
     "@repo/ui": "workspace:*",
+    "@vis.gl/react-google-maps": "^1.8.3",
     "next": "^16.2.6",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
