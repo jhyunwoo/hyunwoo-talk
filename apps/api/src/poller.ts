@@ -55,6 +55,8 @@ export class Poller extends DurableObject<Bindings> {
     const url = new URL(request.url);
     try {
       switch (url.pathname) {
+        case "/api/ws":
+          return await this.handleWsUpgrade(request, url);
         case "/ensure": {
           await this.ensureAlarm();
           return Response.json({ ok: true });
@@ -103,7 +105,11 @@ export class Poller extends DurableObject<Bindings> {
     }
     const activeUntil =
       (await this.ctx.storage.get<number>(ACTIVE_UNTIL_KEY)) ?? 0;
-    const interval = now < activeUntil ? ACTIVE_INTERVAL_MS : IDLE_INTERVAL_MS;
+    // While a web client holds a WebSocket open, poll Touchgym fast so inbound
+    // (console-user) messages reach it near-instantly.
+    const hasSockets = this.ctx.getWebSockets().length > 0;
+    const interval =
+      hasSockets || now < activeUntil ? ACTIVE_INTERVAL_MS : IDLE_INTERVAL_MS;
     await this.ctx.storage.setAlarm(now + interval);
   }
 
@@ -170,6 +176,7 @@ export class Poller extends DurableObject<Bindings> {
             .values(fresh.map((m) => this.toRow(m, seq)))
             .onConflictDoNothing();
           for (const message of fresh) {
+            this.broadcast(message);
             await this.notify(message);
           }
           ingested = fresh.length;
@@ -202,12 +209,84 @@ export class Poller extends DurableObject<Bindings> {
       .values(this.toRow(message, seq))
       .onConflictDoNothing();
 
+    this.broadcast(message);
     await this.armActiveWindow();
   }
 
   /** Enter (or extend) fast-poll mode for an hour after any message activity. */
   private async armActiveWindow(): Promise<void> {
     await this.ctx.storage.put(ACTIVE_UNTIL_KEY, Date.now() + ACTIVE_WINDOW_MS);
+  }
+
+  // ── Real-time WebSocket fan-out ────────────────────────────────────────────
+
+  /**
+   * Accept a hibernatable WebSocket from a web client. The connection is
+   * receive-only (sends still go through POST /api/messages so the DO stays the
+   * single writer); we just push new messages to it as they are ingested/sent.
+   */
+  private async handleWsUpgrade(request: Request, url: URL): Promise<Response> {
+    if ((request.headers.get("Upgrade") ?? "").toLowerCase() !== "websocket") {
+      return new Response("Expected a WebSocket upgrade", { status: 426 });
+    }
+    const userId = url.searchParams.get("userId") ?? undefined;
+    const peerId = url.searchParams.get("peerId") ?? undefined;
+
+    const pair = new WebSocketPair();
+    const client = pair[0];
+    const server = pair[1];
+    this.ctx.acceptWebSocket(server);
+    // Survives hibernation; lets broadcast() target only this user's threads.
+    server.serializeAttachment({ userId, peerId });
+    // Keepalive answered by the runtime without waking the DO.
+    this.ctx.setWebSocketAutoResponse(
+      new WebSocketRequestResponsePair("ping", "pong"),
+    );
+
+    // Someone is watching: fast-poll Touchgym and make sure the loop is alive.
+    await this.armActiveWindow();
+    await this.ensureAlarm();
+
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  /** Push a new message to every connected client it concerns. */
+  private broadcast(message: ChatMessage): void {
+    const sockets = this.ctx.getWebSockets();
+    if (sockets.length === 0) return;
+    const payload = JSON.stringify({ type: "message", message });
+    for (const ws of sockets) {
+      const att = ws.deserializeAttachment() as { userId?: string } | null;
+      const uid = att?.userId;
+      // Untagged sockets receive everything; tagged ones only their own threads.
+      if (uid && uid !== message.fromId && uid !== message.toId) continue;
+      try {
+        ws.send(payload);
+      } catch {
+        /* socket already gone; the runtime will fire webSocketClose */
+      }
+    }
+  }
+
+  override async webSocketMessage(): Promise<void> {
+    // Clients only send "ping" keepalives, which setWebSocketAutoResponse
+    // answers without waking the DO. Nothing else to handle.
+  }
+
+  override async webSocketClose(
+    ws: WebSocket,
+    code: number,
+    reason: string,
+  ): Promise<void> {
+    try {
+      ws.close(code, reason);
+    } catch {
+      /* already closed */
+    }
+  }
+
+  override async webSocketError(): Promise<void> {
+    /* the runtime removes the socket; nothing to clean up */
   }
 
   private toRow(message: ChatMessage, mailboxSeq: string) {

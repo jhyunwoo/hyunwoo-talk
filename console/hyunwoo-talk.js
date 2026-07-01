@@ -87,12 +87,24 @@
     return startToday - DAY_MS - KST_OFFSET_MS;
   }
 
+  // Touchgym's memo field stores at most ~16KB (small margin for overhead).
+  const MEMO_MAX_BYTES = 16 * 1024 - 512;
+  const utf8Encoder = new TextEncoder();
+  // Blank lines kept at the top so a casual viewer of the member page sees empty
+  // space, not the chat transport lines. The parser ignores blank lines.
+  const MEMO_HIDE_PREFIX = "\n".repeat(10);
+
+  // Serialize (oldest→newest) behind the hide prefix, dropping the OLDEST until
+  // within the memo cap. The newest message is always kept.
   function serializeMemo(list) {
-    return list
-      .slice()
-      .sort((a, b) => a.ts - b.ts)
-      .map(encodeLine)
-      .join("\n");
+    const kept = list.slice().sort((a, b) => a.ts - b.ts);
+    const render = () => MEMO_HIDE_PREFIX + kept.map(encodeLine).join("\n");
+    let memo = render();
+    while (kept.length > 1 && utf8Encoder.encode(memo).length > MEMO_MAX_BYTES) {
+      kept.shift();
+      memo = render();
+    }
+    return memo;
   }
 
   function appendToMemo(memo, message) {

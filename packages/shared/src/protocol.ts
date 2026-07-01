@@ -12,6 +12,14 @@ import type { ChatMessage } from "./types";
  */
 export const LINE_PREFIX = "HWT1";
 
+/**
+ * Blank lines kept at the very top of the memo. A casual viewer of the Touchgym
+ * member page then sees empty space instead of the chat transport lines. The
+ * parser ignores blank lines, so this never affects decoding.
+ */
+export const MEMO_HIDE_LINES = 10;
+const MEMO_HIDE_PREFIX = "\n".repeat(MEMO_HIDE_LINES);
+
 /** Korea Standard Time offset (Touchgym keeps "yesterday + today" in KST). */
 const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -54,12 +62,42 @@ export function parseMemo(memo: string): ChatMessage[] {
   return messages;
 }
 
-/** Render a list of messages back into memo text (sorted by time). */
+/** Render a list of messages back into memo text (sorted by time), behind the
+ * blank-line hide prefix. */
 export function serializeMemo(messages: ChatMessage[]): string {
-  return [...messages]
+  const body = [...messages]
     .sort((a, b) => a.ts - b.ts)
     .map(encodeLine)
     .join("\n");
+  return MEMO_HIDE_PREFIX + body;
+}
+
+/**
+ * Touchgym's memo field stores at most ~16KB. We keep the serialized memo under
+ * this; a small margin covers any storage overhead. The permanent archive lives
+ * in D1, so trimming this transport buffer loses nothing durable.
+ */
+export const MEMO_MAX_BYTES = 16 * 1024 - 512;
+
+const utf8Encoder = new TextEncoder();
+
+/**
+ * Serialize messages (oldest→newest) and, if the result exceeds `maxBytes`,
+ * drop the OLDEST messages one at a time until it fits. The newest message is
+ * always kept (a single line is never dropped to satisfy the cap).
+ */
+export function serializeMemoCapped(
+  messages: ChatMessage[],
+  maxBytes: number = MEMO_MAX_BYTES,
+): string {
+  const kept = [...messages].sort((a, b) => a.ts - b.ts);
+  const render = () => MEMO_HIDE_PREFIX + kept.map(encodeLine).join("\n");
+  let memo = render();
+  while (kept.length > 1 && utf8Encoder.encode(memo).length > maxBytes) {
+    kept.shift(); // drop oldest
+    memo = render();
+  }
+  return memo;
 }
 
 /** Current hour (0–23) in KST. */
@@ -89,7 +127,10 @@ export function retentionWindowStart(now: number = Date.now()): number {
   return startOfYesterdayShifted - KST_OFFSET_MS;
 }
 
-/** Append `message` to an existing memo, pruning anything past retention. */
+/**
+ * Append `message` to an existing memo, dropping anything past the retention
+ * window and then the oldest messages if still over the ~16KB memo cap.
+ */
 export function appendToMemo(
   memo: string,
   message: ChatMessage,
@@ -98,13 +139,16 @@ export function appendToMemo(
   const cutoff = retentionWindowStart(now);
   const kept = parseMemo(memo).filter((m) => m.ts >= cutoff && m.id !== message.id);
   kept.push(message);
-  return serializeMemo(kept);
+  return serializeMemoCapped(kept);
 }
 
-/** Drop messages older than the retention window. Returns the new memo text. */
+/**
+ * Drop messages older than the retention window, then the oldest messages if
+ * still over the ~16KB memo cap. Returns the new memo text.
+ */
 export function pruneMemo(memo: string, now: number = Date.now()): string {
   const cutoff = retentionWindowStart(now);
-  return serializeMemo(parseMemo(memo).filter((m) => m.ts >= cutoff));
+  return serializeMemoCapped(parseMemo(memo).filter((m) => m.ts >= cutoff));
 }
 
 /** A short, URL-safe unique id for a new message. */

@@ -3,6 +3,28 @@ import type { ChatMessage, PushSubscriptionPayload } from "@repo/shared";
 export const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8787";
 
+const REQUEST_TIMEOUT_MS = 15000;
+
+/**
+ * fetch with a hard timeout so a stalled request can't hang the caller forever
+ * (a hung initial load would otherwise strand the chat on a spinner). If the
+ * caller supplies its own signal, we defer to it.
+ */
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit = {},
+  signal?: AbortSignal,
+): Promise<Response> {
+  if (signal) return fetch(url, { ...init, signal });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 interface MessagesResponse {
   messages: ChatMessage[];
   hasMore: boolean;
@@ -26,9 +48,11 @@ export async function fetchMessages(
   if (query.after !== undefined) params.set("after", String(query.after));
   if (query.limit !== undefined) params.set("limit", String(query.limit));
 
-  const res = await fetch(`${API_BASE}/api/messages?${params.toString()}`, {
+  const res = await fetchWithTimeout(
+    `${API_BASE}/api/messages?${params.toString()}`,
+    {},
     signal,
-  });
+  );
   if (!res.ok) throw new Error(`fetchMessages failed: ${res.status}`);
   return (await res.json()) as MessagesResponse;
 }

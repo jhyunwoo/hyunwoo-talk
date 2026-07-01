@@ -14,6 +14,7 @@ import {
   type DecryptedMessage,
 } from "@repo/shared";
 import { fetchMessages, sendMessage } from "../lib/api";
+import { openMessageSocket } from "../lib/ws";
 import {
   disablePush,
   enablePush,
@@ -26,7 +27,8 @@ import styles from "./Chat.module.css";
 
 const PAGE_SIZE = 50;
 const OLDER_PAGE_SIZE = 30;
-const POLL_INTERVAL_MS = 4000;
+// Fallback catch-up cadence used only while the WebSocket is disconnected.
+const LIVE_FALLBACK_MS = 12000;
 
 // Run before paint on the client so the first visible frame is already scrolled
 // to the newest message; fall back to useEffect on the server (SSR) to avoid the
@@ -63,23 +65,24 @@ export function Chat({ auth, onLogout }: ChatProps) {
   const [pushBusy, setPushBusy] = useState(false);
   const [pushDenied, setPushDenied] = useState(false);
 
-  const seenIds = useRef<Set<string>>(new Set());
   const scrollRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  /** Newest message timestamp seen, for catch-up fetches on (re)connect. */
+  const lastTsRef = useRef(0);
 
-  /** Merge new decrypted messages in, de-duplicating by id, sorted by time. */
+  /**
+   * Merge new decrypted messages in, de-duplicating by id, sorted by time.
+   * Pure: dedupes against the previous state (never a side-effecting ref) so
+   * React re-invoking the updater — e.g. under concurrent rendering — can't
+   * drop a batch and leave the id "seen but not shown".
+   */
   const merge = useCallback((incoming: DecryptedMessage[]) => {
     if (incoming.length === 0) return;
     setItems((prev) => {
-      const next = prev.slice();
-      let changed = false;
-      for (const m of incoming) {
-        if (seenIds.current.has(m.id)) continue;
-        seenIds.current.add(m.id);
-        next.push(m);
-        changed = true;
-      }
-      if (!changed) return prev;
+      const known = new Set(prev.map((m) => m.id));
+      const additions = incoming.filter((m) => !known.has(m.id));
+      if (additions.length === 0) return prev;
+      const next = prev.concat(additions);
       next.sort((a, b) => a.ts - b.ts || a.id.localeCompare(b.id));
       return next;
     });
@@ -134,14 +137,22 @@ export function Chat({ auth, onLogout }: ChatProps) {
     if (el) el.scrollTop = el.scrollHeight;
   }, [ready]);
 
-  // Live polling for new messages.
+  // Track the newest timestamp so reconnect catch-up fetches only the gap.
+  useEffect(() => {
+    if (items.length > 0) lastTsRef.current = items[items.length - 1]!.ts;
+  }, [items]);
+
+  // Live updates over a WebSocket: the mailbox Durable Object pushes each new
+  // message (ingested from Touchgym or sent by a web client) in real time. On
+  // every (re)connect we catch up on anything missed while disconnected, and a
+  // slow fallback poll runs only while the socket is down.
   useEffect(() => {
     if (!ready) return;
     let active = true;
-    const timer = setInterval(async () => {
-      const after =
-        items.length > 0 ? items[items.length - 1]!.ts : undefined;
+
+    const catchUp = async () => {
       try {
+        const after = lastTsRef.current || undefined;
         const { messages } = await fetchMessages({
           userId,
           peerId,
@@ -151,18 +162,41 @@ export function Chat({ auth, onLogout }: ChatProps) {
         if (!active || messages.length === 0) return;
         const stick = isNearBottom();
         const decrypted = await decryptBatch(messages, password);
+        if (!active) return;
         merge(decrypted);
         if (stick) requestAnimationFrame(() => scrollToBottom("smooth"));
       } catch {
-        /* transient network error — retry next tick */
+        /* transient — the socket or the next fallback tick will retry */
       }
-    }, POLL_INTERVAL_MS);
+    };
+
+    const handleMessage = async (message: ChatMessage) => {
+      const stick = isNearBottom();
+      const [decrypted] = await decryptBatch([message], password);
+      if (!active || !decrypted) return;
+      merge([decrypted]);
+      if (stick) requestAnimationFrame(() => scrollToBottom("smooth"));
+    };
+
+    const socket = openMessageSocket({
+      userId,
+      peerId,
+      onOpen: () => void catchUp(),
+      onMessage: (message) => void handleMessage(message),
+    });
+
+    // Safety net: poll only while the socket can't stay connected.
+    const fallback = setInterval(() => {
+      if (!socket.isOpen()) void catchUp();
+    }, LIVE_FALLBACK_MS);
+
     return () => {
       active = false;
-      clearInterval(timer);
+      clearInterval(fallback);
+      socket.close();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, items, userId, peerId, password]);
+  }, [ready, userId, peerId, password]);
 
   // Reflect the current notification state on mount without prompting. When
   // permission is already granted, refreshPush silently re-subscribes (and

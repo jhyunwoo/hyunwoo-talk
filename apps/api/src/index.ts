@@ -74,13 +74,18 @@ function visitConditions(f: VisitFilter): SQL[] {
 
 const app = new Hono<AppEnv>();
 
-app.use("*", (c, next) =>
-  cors({
+app.use("*", (c, next) => {
+  // WebSocket upgrades aren't CORS-preflighted and the cors() middleware would
+  // try to mutate the immutable 101 response — skip it for upgrades.
+  if ((c.req.header("upgrade") ?? "").toLowerCase() === "websocket") {
+    return next();
+  }
+  return cors({
     origin: c.env.CORS_ORIGIN || "*",
     allowMethods: ["GET", "POST", "OPTIONS"],
     allowHeaders: ["Content-Type", "Authorization"],
-  })(c, next),
-);
+  })(c, next);
+});
 
 // Gate every analytics endpoint behind the admin token.
 app.use("/api/admin/*", adminAuth);
@@ -95,6 +100,7 @@ code{background:#f3f3f3;padding:1px 5px;border-radius:4px}h1{font-size:20px}li{m
 <p>1-on-1 encrypted messaging bridged through Touchgym. Endpoints:</p>
 <ul>
 <li><code>GET  /api/health</code> — liveness</li>
+<li><code>GET  /api/ws?userId=&peerId=</code> — WebSocket for real-time message delivery</li>
 <li><code>GET  /api/push/vapid-public-key</code> — VAPID public key for the web client</li>
 <li><code>POST /api/push/subscribe</code> — <code>{ userId, subscription }</code></li>
 <li><code>POST /api/push/unsubscribe</code> — <code>{ endpoint }</code></li>
@@ -109,6 +115,15 @@ code{background:#f3f3f3;padding:1px 5px;border-radius:4px}h1{font-size:20px}li{m
   )
 
   .get("/api/health", (c) => c.json({ ok: true, service: "hyunwoo-talk-api" }))
+
+  // Real-time chat: upgrade and hand the socket to the single mailbox DO, which
+  // broadcasts new messages (ingested from Touchgym or sent by web clients).
+  .get("/api/ws", (c) => {
+    if ((c.req.header("upgrade") ?? "").toLowerCase() !== "websocket") {
+      return c.text("Expected a WebSocket upgrade", 426);
+    }
+    return pollerStub(c.env).fetch(c.req.raw);
+  })
 
   .get("/api/push/vapid-public-key", (c) =>
     c.json({ publicKey: c.env.VAPID_PUBLIC_KEY || null }),
