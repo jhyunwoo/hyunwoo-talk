@@ -5,6 +5,12 @@
   padding-bottom: max(10px, env(safe-area-inset-bottom));
 }
 
+.error {
+  color: var(--danger);
+  font-size: 12px;
+  padding: 0 4px 8px;
+}
+
 .emojiPanel {
   display: grid;
   grid-template-columns: repeat(8, 1fr);

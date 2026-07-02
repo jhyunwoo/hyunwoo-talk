@@ -17,7 +17,11 @@ import {
   sql,
   type SQL,
 } from "drizzle-orm";
-import { newMessageId, type ChatMessage } from "@repo/shared";
+import {
+  MAX_CIPHERTEXT_LENGTH,
+  newMessageId,
+  type ChatMessage,
+} from "@repo/shared";
 import type { AppEnv, Bindings } from "./bindings";
 import { getDb } from "./db";
 import { messages, pushSubscriptions, visits } from "./db/schema";
@@ -439,7 +443,7 @@ code{background:#f3f3f3;padding:1px 5px;border-radius:4px}h1{font-size:20px}li{m
         id: z.string().min(1).max(64).optional(),
         fromId: userId,
         toId: userId,
-        ciphertext: z.string().min(1),
+        ciphertext: z.string().min(1).max(MAX_CIPHERTEXT_LENGTH),
         ts: z.number().int().positive().optional(),
       }),
     ),

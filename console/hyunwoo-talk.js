@@ -89,6 +89,10 @@
 
   // Touchgym's memo field stores at most ~16KB (small margin for overhead).
   const MEMO_MAX_BYTES = 16 * 1024 - 512;
+  // Mirrors MAX_CIPHERTEXT_LENGTH in packages/shared/src/protocol.ts. This
+  // client writes the memo directly (not through the API), so the server's
+  // validation never sees it — the cap has to be enforced here too.
+  const MAX_CIPHERTEXT_LENGTH = 6000;
   const utf8Encoder = new TextEncoder();
   // Blank lines kept at the top so a casual viewer of the member page sees empty
   // space, not the chat transport lines. The parser ignores blank lines.
@@ -438,6 +442,15 @@
       return;
     }
 
+    const ciphertext = await encryptMessage(message.trim(), state.password);
+    if (ciphertext.length > MAX_CIPHERTEXT_LENGTH) {
+      console.log(
+        "%c메시지가 너무 깁니다. 조금 더 짧게 나눠서 보내주세요.",
+        C.err,
+      );
+      return;
+    }
+
     const msg = {
       id:
         (crypto.randomUUID && crypto.randomUUID()) ||
@@ -445,7 +458,7 @@
       fromId: state.myId,
       toId: state.targetId,
       ts: Date.now(),
-      ciphertext: await encryptMessage(message.trim(), state.password),
+      ciphertext,
     };
 
     try {

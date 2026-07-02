@@ -256,10 +256,23 @@ export class Poller extends DurableObject<Bindings> {
     if (sockets.length === 0) return;
     const payload = JSON.stringify({ type: "message", message });
     for (const ws of sockets) {
-      const att = ws.deserializeAttachment() as { userId?: string } | null;
+      const att = ws.deserializeAttachment() as
+        | { userId?: string; peerId?: string }
+        | null;
       const uid = att?.userId;
-      // Untagged sockets receive everything; tagged ones only their own threads.
-      if (uid && uid !== message.fromId && uid !== message.toId) continue;
+      const pid = att?.peerId;
+      if (uid) {
+        // Tagged socket: deliver only messages belonging to this exact
+        // userId<->peerId thread. Checking uid alone isn't enough — a user
+        // chatting with multiple peers over time (or in another tab) would
+        // otherwise have an unrelated thread's messages merged into whichever
+        // conversation happens to be open right now.
+        const relevant =
+          (uid === message.fromId && (!pid || pid === message.toId)) ||
+          (uid === message.toId && (!pid || pid === message.fromId));
+        if (!relevant) continue;
+      }
+      // Untagged sockets (no userId supplied) receive everything.
       try {
         ws.send(payload);
       } catch {

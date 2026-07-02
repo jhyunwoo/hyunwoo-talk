@@ -62,12 +62,20 @@ export async function sendMessage(body: {
   toId: string;
   ciphertext: string;
 }): Promise<ChatMessage> {
-  const res = await fetch(`${API_BASE}/api/messages`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error(`sendMessage failed: ${res.status}`);
+  let res: Response;
+  try {
+    res = await fetchWithTimeout(`${API_BASE}/api/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new Error("전송 시간이 초과되었습니다. 다시 시도해주세요.");
+    }
+    throw new Error("네트워크 오류로 전송하지 못했습니다.");
+  }
+  if (!res.ok) throw new Error(`전송에 실패했습니다 (HTTP ${res.status}).`);
   const data = (await res.json()) as { message: ChatMessage };
   return data.message;
 }

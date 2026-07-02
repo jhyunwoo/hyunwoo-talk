@@ -79,6 +79,26 @@ export function serializeMemo(messages: ChatMessage[]): string {
  */
 export const MEMO_MAX_BYTES = 16 * 1024 - 512;
 
+/**
+ * Max length (base64 chars ≈ bytes) allowed for a single message's ciphertext.
+ * The memo cap always keeps the single newest message even if the memo as a
+ * whole is over budget — so without this limit, one unusually long message
+ * could alone approach or exceed MEMO_MAX_BYTES and crowd out (or fail to
+ * leave room for) every other message. ~6000 bytes comfortably fits a very
+ * long chat message while leaving most of the budget for the rest of the
+ * conversation. Enforced both server-side (POST /api/messages) and by callers
+ * that write the memo directly (the console client, which bypasses the API).
+ */
+export const MAX_CIPHERTEXT_LENGTH = 6000;
+
+/**
+ * Max plaintext length (UTF-16 code units) the web composer accepts. Chosen so
+ * that even worst-case input (every character a 4-byte UTF-8 codepoint, e.g.
+ * emoji) still encrypts to well under {@link MAX_CIPHERTEXT_LENGTH}:
+ * ciphertext bytes ≈ 4/3 * (44 + 4 * chars), so 1000 chars → ~4700 bytes.
+ */
+export const MAX_MESSAGE_CHARS = 1000;
+
 const utf8Encoder = new TextEncoder();
 
 /**

@@ -12,6 +12,14 @@ export interface MessageSocket {
   isOpen(): boolean;
   /** Stop reconnecting and close the connection. */
   close(): void;
+  /**
+   * Drop the current connection (if any) and reconnect immediately, bypassing
+   * backoff. Mobile OSes can silently kill the underlying pipe when a PWA is
+   * backgrounded without ever firing `onclose` — so `isOpen()` keeps reporting
+   * a "zombie" connection that will never receive anything again. Call this
+   * when the app becomes visible/foregrounded again to guarantee a live socket.
+   */
+  reconnectNow(): void;
 }
 
 interface MessageSocketOptions {
@@ -125,6 +133,31 @@ export function openMessageSocket(opts: MessageSocketOptions): MessageSocket {
         /* noop */
       }
       ws = null;
+    },
+    reconnectNow: () => {
+      if (closed) return;
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+      reconnectDelay = 1_000;
+      stopPing();
+      if (ws) {
+        const stale = ws;
+        ws = null;
+        // Detach handlers first so the old socket's belated close/error can't
+        // race with (or duplicate) the new connection we're about to open.
+        stale.onopen = null;
+        stale.onmessage = null;
+        stale.onclose = null;
+        stale.onerror = null;
+        try {
+          stale.close();
+        } catch {
+          /* noop */
+        }
+      }
+      connect();
     },
   };
 }

@@ -10,6 +10,7 @@ import {
 import {
   encryptMessage,
   tryDecryptMessage,
+  MAX_CIPHERTEXT_LENGTH,
   type ChatMessage,
   type DecryptedMessage,
 } from "@repo/shared";
@@ -171,6 +172,12 @@ export function Chat({ auth, onLogout }: ChatProps) {
     };
 
     const handleMessage = async (message: ChatMessage) => {
+      // Defense in depth: only accept messages belonging to this exact
+      // thread, even though the server already scopes broadcasts by peer.
+      const belongsToThread =
+        (message.fromId === userId && message.toId === peerId) ||
+        (message.fromId === peerId && message.toId === userId);
+      if (!belongsToThread) return;
       const stick = isNearBottom();
       const [decrypted] = await decryptBatch([message], password);
       if (!active || !decrypted) return;
@@ -190,9 +197,27 @@ export function Chat({ auth, onLogout }: ChatProps) {
       if (!socket.isOpen()) void catchUp();
     }, LIVE_FALLBACK_MS);
 
+    // Mobile OSes routinely suspend or kill the socket's underlying pipe when
+    // the PWA is backgrounded, often without ever firing a close event — so
+    // isOpen() can report a "zombie" connection that will never receive
+    // another message. Whenever the app becomes visible/foregrounded again
+    // (tab switch, app resume, bfcache restore, or regained connectivity),
+    // force a fresh socket and immediately fetch anything we missed.
+    const onResume = () => {
+      if (document.visibilityState !== "visible") return;
+      socket.reconnectNow();
+      void catchUp();
+    };
+    document.addEventListener("visibilitychange", onResume);
+    window.addEventListener("pageshow", onResume);
+    window.addEventListener("online", onResume);
+
     return () => {
       active = false;
       clearInterval(fallback);
+      document.removeEventListener("visibilitychange", onResume);
+      window.removeEventListener("pageshow", onResume);
+      window.removeEventListener("online", onResume);
       socket.close();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -294,6 +319,14 @@ export function Chat({ auth, onLogout }: ChatProps) {
       const trimmed = text.trim();
       if (!trimmed) return;
       const ciphertext = await encryptMessage(trimmed, password);
+      if (ciphertext.length > MAX_CIPHERTEXT_LENGTH) {
+        // The textarea's maxLength already prevents this in the common case;
+        // this guards against pasted text and keeps a single message from
+        // threatening the Touchgym memo's ~16KB budget.
+        throw new Error(
+          "메시지가 너무 깁니다. 조금 더 짧게 나눠서 보내주세요.",
+        );
+      }
       const message = await sendMessage({
         fromId: userId,
         toId: peerId,
